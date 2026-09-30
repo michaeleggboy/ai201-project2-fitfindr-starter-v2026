@@ -59,24 +59,29 @@
 
 ### `search_listings`
 
-- **What it does:**
-- **Inputs:** <!-- name and type each: `max_price` (float), not "a price" -->
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Search the listings data for items matching a description, and optionally a
+size and a price ceiling.
+- **Inputs:** `description`: str - keywords describing what the user wants
+            - `size`: str | None - a size string to filter by, or None to skip size filtering. Match      case-insensitively, "M" should match "S/M".
+            - `max_price`: float | None - maximum price, inclusive, or None to skip price filtering.
+- **Returns:** list[dict] - A list of matching listing dicts, best match first.
+- **When it has nothing:** Returns an empty list when nothing matches — an empty list, not None, and not an exception. The loop branches on this.
 
 ### `suggest_outfit`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Given a thrifted item and the user's wardrobe, suggest one or two outfits.
+- **Inputs:** `new_item`: dict - a listing dict, the item the user is considering.
+            - `wardrobe`: dict - a wardrobe dict with an 'items' key holding a list of items. **It may be empty.**
+- **Returns:** str - A non-empty string with outfit suggestions.
+- **When it has nothing:**  With an empty wardrobe, return general styling advice rather than raising or returning.
 
 ### `create_fit_card`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:**  Write a short caption someone would actually post about the find.
+- **Inputs:** `outfit`: str - the outfit suggestion string from suggest_outfit().
+            - `new_item`: dict - the listing dict for the item.
+- **Returns:** str - A two-to-four sentence caption.
+- **When it has nothing:** If `outfit` is empty or whitespace, return a descriptive message rather than raising.
 
 ---
 
@@ -93,13 +98,13 @@
      The grader checks your code against what you claim here, so the file and
      function have to be real. -->
 
-**Branch rule:**
+**Branch rule:** If search_listings returns an empty list, put a message in the session that there are no matches and stop. Otherwise take the first result and go to suggest_outfit.
 
 **Where it lives:** `agent.py::run_agent`
 
-**How the query is parsed:** <!-- regex, string splitting, or asking the model — say which -->
+**How the query is parsed:** The query is parsed by asking the model.
 
-**What moves through the session:** <!-- which fields, in what order -->
+**What moves through the session:** query, wardrobe -> search_listing(description, max_price, and/or size from query) -> suggest_outfit(new_item from search_listing, wardrobe) --> create_fit_card(outfit from suggest_outfit, new_item from search_listing)
 
 ---
 
