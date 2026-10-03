@@ -13,10 +13,13 @@ Build and test your three tools in `tools.py` first. Then come here.
     python agent.py          runs both example paths below
 """
 
+import json
+import re
+
 import config
 import trace
 from tools import search_listings, suggest_outfit, create_fit_card
-from generate import ModelUnavailable
+from generate import generate, ModelUnavailable
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -106,10 +109,131 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         than a stack trace. The import is already at the top of this file.
     """
     session = new_session(query, wardrobe)
+    next_step = "parse"
+    count = 0
+    while next_step != "done":
+        count += 1
+        trace.check_iterations(count)
 
-    # TODO: delete these two lines and build the loop.
-    session["error"] = "The planning loop isn't built yet — see the TODO in agent.py."
+        if next_step == "parse":
+            session["parsed"] = _parse_query(session["query"])
+            next_step = "search"
+
+        elif next_step == "search":
+            parsed = session["parsed"]
+            session["search_results"] = search_listings(
+                parsed["description"], parsed["size"], parsed["max_price"],
+            )
+            # THE BRANCH: nothing matched → explain what to change, and stop.
+            if not session["search_results"]:
+                session["error"] = _no_results_message(session["parsed"])
+                next_step = "done"
+            else:
+                session["selected_item"] = session["search_results"][0]
+                next_step = "suggest"
+
+        elif next_step == "suggest":
+            session["outfit_suggestion"] = suggest_outfit(
+                session["selected_item"], session["wardrobe"],
+            )
+            next_step = "card"
+
+        elif next_step == "card":
+            session["fit_card"] = create_fit_card(
+                session["outfit_suggestion"], session["selected_item"],
+            )
+            next_step = "done"
+
     return session
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+_PARSE_SYSTEM = (
+    "You extract shopping filters from a thrift-shopping request. "
+    "Reply with a single JSON object and nothing else."
+)
+
+
+def _parse_query(query: str) -> dict:
+    """
+    Pull description / size / max_price out of the query by asking the model.
+
+    Falls back to regex if the model's reply isn't usable JSON, so a parse
+    hiccup never sinks the run.
+    """
+    prompt = (
+        f"Request: {query}\n\n"
+        'Return JSON with exactly these keys:\n'
+        '  "description": the item keywords only (style, item type, color), '
+        'without size or price words\n'
+        '  "size": the size asked for as written (e.g. "M", "S/M", '
+        '"M or smaller", "W32", "US 9"), or null if none\n'
+        '  "max_price": the price ceiling as a number, or null if none'
+    )
+    reply = generate(prompt, system=_PARSE_SYSTEM, temperature=0.0)
+    match = re.search(r"\{.*\}", reply, re.S)
+    try:
+        data = json.loads(match.group(0)) if match else {}
+        description = str(data.get("description") or "").strip()
+        size = data.get("size") or None
+        max_price = data.get("max_price")
+        max_price = float(max_price) if max_price not in (None, "") else None
+        if description:
+            return {"description": description,
+                    "size": str(size).strip() if size else None,
+                    "max_price": max_price}
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return _parse_query_regex(query)
+
+
+def _parse_query_regex(query: str) -> dict:
+    price = re.search(r"(?:under|below|less than|max|<)\s*\$?\s*(\d+(?:\.\d+)?)", query, re.I)
+    size = re.search(r"\bsize\s+([A-Za-z0-9/.]+(?:\s+or\s+(?:smaller|bigger|larger))?)", query, re.I)
+    description = query
+    for m in (price, size):
+        if m:
+            description = description.replace(m.group(0), " ")
+    return {
+        "description": " ".join(description.replace(",", " ").split()),
+        "size": size.group(1) if size else None,
+        "max_price": float(price.group(1)) if price else None,
+    }
+
+
+def _no_results_message(parsed: dict) -> str:
+    """
+    Say what the user could change. Re-runs the search with one filter
+    dropped at a time to find out which filter is the one ruling things out.
+    """
+    desc, size, max_price = parsed["description"], parsed["size"], parsed["max_price"]
+    asked = f'"{desc}"'
+    if size:
+        asked += f", size {size}"
+    if max_price is not None:
+        asked += f", under ${max_price:g}"
+
+    hints = []
+    if max_price is not None:
+        found = search_listings(desc, size, None)
+        if found:
+            cheapest = min(l["price"] for l in found)
+            hints.append(f"raise your budget — the closest match starts at ${cheapest:g}")
+    if size:
+        found = search_listings(desc, None, max_price)
+        if found:
+            sizes = sorted({str(l["size"]) for l in found})[:4]
+            hints.append(f"try a different size — matches come in {', '.join(sizes)}")
+    if not hints:
+        hints.append(
+            f'use broader or different words than "{desc}" '
+            f"(e.g. the item type alone, like \"jacket\" or \"tee\")"
+        )
+        if size or max_price is not None:
+            hints.append("drop the size or price limit")
+
+    return f"Nothing matched {asked}. You could " + ", or ".join(hints) + "."
 
 
 # ── running it directly ───────────────────────────────────────────────────────
