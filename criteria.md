@@ -26,14 +26,14 @@ tool calls and returns a fit card — in at least 4 of 5 tries.
 
 **Why this target:**
 This is the longest path through the agent, and a model is involved at several
-points along it: parsing the query, deciding which listings fit the requested
-size, writing the outfit suggestion, and writing the fit card. Any one of those
-can occasionally return a malformed or incomplete answer, such as a parse that
-leaves out a field or a size check that wrongly rejects every listing, and the
-loop then stops early even though the query was fine. So I allow one miss in 5
-rather than demanding 5 of 5. I don't go lower than 4 because this is the main
-thing the agent exists to do. If a valid query fails twice in five runs, the
-handoffs between tools are broken, and that isn't just model randomness.
+points along it: parsing the query, writing the outfit suggestion, and writing
+the fit card. Any one of those can occasionally return a malformed or incomplete
+answer, such as a parse that leaves out a field or turns the size into something
+the search can't read, and the loop then stops early even though the query was
+fine. So I allow one miss in 5 rather than demanding 5 of 5. I don't go lower
+than 4 because this is the main thing the agent exists to do. If a valid query
+fails twice in five runs, the handoffs between tools are broken, and that isn't
+just model randomness.
 
 ---
 
@@ -87,8 +87,9 @@ write a fifth sentence or round a price.
 For the query `"graphic tee size M or smaller under $25"`, `session["parsed"]`
 has `max_price == 25.0` and a `size` that keeps the "M or smaller" meaning
 (`"M or smaller"`, `"<=M"`, or `"S, M"` all count; plain `"M"` does not). The
-size check is done by the model, not by a lookup table. Each listing's `size`
-string goes to the model, and the model decides whether it fits "M or smaller."
+size check is plain Python inside `search_listings`, with no model call. It reads
+each listing's `size` string into a sizing system (letter, waist, shoe, or One
+Size) and keeps it only if it shares a size with the request.
 
 Scored against this answer key built from the sizes in `data/listings.json`:
 
@@ -102,12 +103,14 @@ graphic tee, $18), the one listing that should match. At least 4 of 5 runs pass.
 
 **Why this target:**
 The sizes in the data are messy: letter sizes, ranges like `S/M`, notes like
-`XL (fits oversized)`, waist sizes, and shoe sizes. Rather than writing a large
-size rulebook, I let the model decide what fits a size range it has never seen
-written that way. A model can be inconsistent on edge cases like `M/L`, so I
-allow one miss in 5. I don't allow two, because the answer key is short and
-fixed, so two wrong calls would mean the prompt is unclear, not just random.
-Requiring `lst_002` keeps the agent from passing by dropping everything.
+`XL (fits oversized)`, waist sizes, and shoe sizes. Keeping the size check in
+plain Python makes `search_listings` deterministic and safe to expose over MCP:
+given the same parsed size, it always returns the same listings. The one place
+the model can still go wrong is the parse. It sometimes flattens "M or smaller"
+to plain `"M"`, which drops `S`, so I allow one miss in 5. I don't allow two,
+because the search side can't vary, so two misses would mean the parse prompt
+is unclear, not just random. Requiring `lst_002` keeps the agent from passing
+by dropping everything.
 
 ---
 
