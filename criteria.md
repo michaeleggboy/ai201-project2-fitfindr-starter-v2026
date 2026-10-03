@@ -25,9 +25,15 @@ Given a query that matches at least one listing, the agent completes all three
 tool calls and returns a fit card — in at least 4 of 5 tries.
 
 **Why this target:**
-<!-- Why 4 of 5 and not 5 of 5? Something about your search, probably —
-     "my search is a plain keyword match and some phrasings will miss" is a
-     real answer. -->
+This is the longest path through the agent, and a model is involved at several
+points along it: parsing the query, deciding which listings fit the requested
+size, writing the outfit suggestion, and writing the fit card. Any one of those
+can occasionally return a malformed or incomplete answer, such as a parse that
+leaves out a field or a size check that wrongly rejects every listing, and the
+loop then stops early even though the query was fine. So I allow one miss in 5
+rather than demanding 5 of 5. I don't go lower than 4 because this is the main
+thing the agent exists to do. If a valid query fails twice in five runs, the
+handoffs between tools are broken, and that isn't just model randomness.
 
 ---
 
@@ -37,66 +43,71 @@ Given a query that matches no listings, the agent stops before calling
 `suggest_outfit` and returns a message naming what to change — 5 of 5 tries.
 
 **Why this target:**
-<!-- Why is 5 of 5 reasonable here when criterion 1 isn't? What's different
-     about this path? -->
+This path has only one decision point, and it is plain Python: if
+`session["search_results"]` is empty, the loop returns before calling
+`suggest_outfit`. No model chooses whether to continue, so no randomness can
+push it past the check, and anything below 5 of 5 is a bug in the loop
 
 ---
 
 ## 3. Something about state
 
-<!-- YOU WRITE THIS ONE.
-
-     How would you know that the item your search found is the same item the
-     next tool received? Name something countable or observable.
-
-     This is the criterion people find hardest, because state failure doesn't
-     look like state failure — it looks like a tool problem. Something that
-     compares session["selected_item"] against what actually reached
-     suggest_outfit is the shape you're after. -->
-
-
+On a matching query, the listing `id` passed into `suggest_outfit` and the
+listing `id` passed into `create_fit_card` (both logged in the trace) are equal
+to `session["selected_item"]["id"]`, which is equal to
+`session["search_results"][0]["id"]` — in 5 of 5 tries.
 
 **Why this target:**
-
-
+Picking the item and passing it along is plain Python with no model involved, so
+nothing random can get in the way and anything below 5 of 5 is a bug. If the
+loop hands over the wrong variable, such as a stale item or the whole results
+list, `suggest_outfit` still returns a reasonable outfit for *something*. It
+looks like a tool problem when it is really a state problem. Comparing `id`s at
+each handoff catches it, and titles would not, since two listings can have
+similar titles.
 
 ---
 
 ## 4. Something about the fit card
 
-<!-- YOU WRITE THIS ONE.
-
-     The fit card calls a model, so the same input can produce different words
-     each time. That's not a bug — it's the nature of the tool. So what would
-     make it acceptable?
-
-     Think about what you'd actually be unhappy to see. A caption that never
-     mentions the price? Two different items producing the same opening
-     sentence? A card longer than a caption anyone would post? Any of those can
-     be turned into a number. -->
-
-
+Running the same matching query 5 times, a fit card passes when it states the
+selected item's exact price (`$18` or `$18.00` both count) and its platform, and
+is 2–4 sentences long. At least 4 of 5 cards pass.
 
 **Why this target:**
-
-
+The wording can change between runs, but the facts can't. The price and platform
+are in the listing, so a card that leaves them out or gets them wrong has failed
+at its job. I allow 4 of 5 rather than 5 of 5 because the model will sometimes
+write a fifth sentence or round a price.
 
 ---
 
 ## 5. Your choice
 
-<!-- YOU WRITE THIS ONE TOO.
+For the query `"graphic tee size M or smaller under $25"`, `session["parsed"]`
+has `max_price == 25.0` and a `size` that keeps the "M or smaller" meaning
+(`"M or smaller"`, `"<=M"`, or `"S, M"` all count; plain `"M"` does not). The
+size check is done by the model, not by a lookup table. Each listing's `size`
+string goes to the model, and the model decides whether it fits "M or smaller."
 
-     Pick something you actually care about getting right. Speed, the empty
-     wardrobe path, what happens when the model can't be reached, whether the
-     search respects a price ceiling — anything, as long as it names a number
-     or an observable outcome. -->
+Scored against this answer key built from the sizes in `data/listings.json`:
 
+- **Must keep:** `S`, `M`, `S/M`, `M/L` (`M/L` still covers M)
+- **Must drop:** `L`, `L/XL`, `XL`, `XL (oversized)`, `XL (fits oversized)`,
+  any `One Size…`, any waist size (`W28`, `W30 L30`, …), any shoe size (`US 8`, …)
 
+A run passes when every listing in `session["search_results"]` costs $25.00 or
+less, no listing breaks the answer key, and the list includes `lst_002` (S/M
+graphic tee, $18), the one listing that should match. At least 4 of 5 runs pass.
 
 **Why this target:**
-
-
+The sizes in the data are messy: letter sizes, ranges like `S/M`, notes like
+`XL (fits oversized)`, waist sizes, and shoe sizes. Rather than writing a large
+size rulebook, I let the model decide what fits a size range it has never seen
+written that way. A model can be inconsistent on edge cases like `M/L`, so I
+allow one miss in 5. I don't allow two, because the answer key is short and
+fixed, so two wrong calls would mean the prompt is unclear, not just random.
+Requiring `lst_002` keeps the agent from passing by dropping everything.
 
 ---
 
